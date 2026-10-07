@@ -136,6 +136,10 @@ The API shares one database pool per server instance, with three connections by 
 
 If an import fails, its authenticated response and server logs include `stage` and `databaseCode`, without SQL, row values, credentials, or the source URL. For example, `23505` indicates a unique-key conflict and `42501` indicates missing database permissions. Use these diagnostics to investigate the cause before retrying. Unknown boolean stats remain `null` instead of being rewritten as `false`.
 
+Before inserting matches or related records, the import aligns the owned ID sequence if it would generate an ID already present in the table. This handles data previously imported by migrations with explicit IDs. The repair holds a table lock that allows ordinary reads, never lowers the sequence below its reserved values, and requires sequence UPDATE permission only when repair is needed. It does not change existing row IDs. Checking sequences consumes an ID; PostgreSQL sequence advances also persist if the import rolls back, so gaps in IDs are normal. Other unique-key errors still roll back and now include a sanitized `databaseConstraint` name in the diagnostic.
+
+When a complete snapshot differs by exactly one removed date and one added date, and the corresponding match differs by one day with all other stats identical, the import corrects its date while preserving its ID. Partial snapshots and ambiguous or different match records retain the existing insertion behavior.
+
 ## License
 
 This project is licensed under the Apache 2.0 License - see the [LICENSE](./LICENSE) file for details.

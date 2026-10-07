@@ -85,7 +85,10 @@ function setupStatsSync() {
       });
       const result = await response.json();
       if (!response.ok) {
-        const diagnostic = result.databaseCode && result.stage ? ` (${result.databaseCode}; ${result.stage})` : '';
+        const diagnostic =
+          result.databaseCode && result.stage
+            ? ` (${[result.databaseCode, result.stage, result.databaseConstraint].filter(Boolean).join('; ')})`
+            : '';
         throw new Error((result.message || 'Unable to update stats. Please try again.') + diagnostic);
       }
 
