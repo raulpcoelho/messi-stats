@@ -214,6 +214,70 @@ h1 {
     font-weight: 300;
 }
 
+#stats-title {
+    user-select: none;
+}
+
+#stats-title:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+}
+
+.stats-sync-controls {
+    margin-top: 1.25rem;
+}
+
+.stats-sync-form {
+    margin-top: 1rem;
+    max-width: 520px;
+}
+
+.stats-sync-form label {
+    display: block;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+}
+
+.stats-sync-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.stats-sync-fields input {
+    flex: 1;
+    min-width: 160px;
+    background: var(--secondary);
+    color: var(--text);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    padding: 0.7rem 1rem;
+    font: inherit;
+}
+
+.stats-sync-fields input:focus {
+    outline: 2px solid var(--accent);
+}
+
+.stats-sync-controls button:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.stats-sync-status {
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.stats-sync-status[data-state="success"] {
+    color: var(--success);
+}
+
+.stats-sync-status[data-state="error"] {
+    color: var(--danger);
+}
+
 /* Buttons */
 .btn {
     padding: 0.7rem 1.4rem;
