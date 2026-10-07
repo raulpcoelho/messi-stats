@@ -4,6 +4,7 @@ import {
   HttpException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { EntityManager, EntityTarget, ObjectLiteral } from 'typeorm';
@@ -18,9 +19,20 @@ function dateKey(value: Date | string): string {
   return typeof value === 'string' ? value.slice(0, 10) : value.toISOString().slice(0, 10);
 }
 
+function databaseErrorCode(error: any): string {
+  const code = error?.driverError?.code ?? error?.code;
+  if (
+    typeof code === 'string' &&
+    (/^[0-9A-Z]{5}$/.test(code) || ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EPIPE'].includes(code))
+  )
+    return code;
+  return 'unknown';
+}
+
 @Injectable()
 export class StatsSyncService {
   private syncing = false;
+  private readonly logger = new Logger(StatsSyncService.name);
 
   constructor(private readonly database: TypeOrmService) {}
 
@@ -30,13 +42,24 @@ export class StatsSyncService {
     try {
       const matches = await this.fetchMatches();
       const runner = this.database.createQueryRunner();
+      let stage = 'connect';
+      let connection: { end(): Promise<void> };
+      let rollbackFailed = false;
       try {
-        await runner.connect();
+        connection = await runner.connect();
+        stage = 'start_transaction';
         await runner.startTransaction();
+        stage = 'configure_transaction';
+        // Server-side limits still apply if the hosting platform freezes or terminates the request.
+        await runner.query("SET LOCAL statement_timeout = '15s'");
+        await runner.query("SET LOCAL lock_timeout = '3s'");
+        await runner.query("SET LOCAL idle_in_transaction_session_timeout = '20s'");
+        stage = 'lock';
         // A transaction-scoped database lock also protects separate serverless instances.
         const [lock] = await runner.query('SELECT pg_try_advisory_xact_lock($1) AS locked', [1297306707]);
         if (!lock.locked) throw new ConflictException('A stats update is already in progress.');
 
+        stage = 'read_matches';
         const existing = await runner.manager.find(Match, {
           relations: { team: true, opponent: true, competition: true, season: true },
         });
@@ -47,16 +70,19 @@ export class StatsSyncService {
           byDate.set(key, match);
         }
 
+        stage = 'save_teams';
         const teams = await this.ensureNames(
           runner.manager,
           Team,
           matches.flatMap(m => [m.team, m.opponent]),
         );
+        stage = 'save_seasons';
         const seasons = await this.ensureNames(
           runner.manager,
           Season,
           matches.map(m => m.season),
         );
+        stage = 'save_competitions';
         const competitions = await this.ensureNames(
           runner.manager,
           Competition,
@@ -93,15 +119,64 @@ export class StatsSyncService {
           if (previous) result.updated++;
           else result.inserted++;
         }
+        stage = 'save_matches';
         if (changes.length) await runner.manager.save(Match, changes, { chunk: 100 });
+        stage = 'commit';
         await runner.commitTransaction();
         return result;
       } catch (error) {
-        if (runner.isTransactionActive) await runner.rollbackTransaction();
+        const code = databaseErrorCode(error);
+        this.logger.error({ event: 'stats_sync_failed', stage, databaseCode: code });
+        if (runner.isTransactionActive && !runner.isReleased) {
+          try {
+            await runner.rollbackTransaction();
+          } catch (rollbackError) {
+            rollbackFailed = true;
+            this.logger.error({
+              event: 'stats_sync_cleanup_failed',
+              stage: 'rollback',
+              databaseCode: databaseErrorCode(rollbackError),
+            });
+            // A client with an unclosed transaction must never return to the shared pool.
+            if (connection && !runner.isReleased) {
+              try {
+                await connection.end();
+              } catch {
+                this.logger.error({ event: 'stats_sync_cleanup_failed', stage: 'disconnect' });
+              }
+            }
+          }
+        }
+        if (rollbackFailed) {
+          throw new ServiceUnavailableException({
+            message: 'Stats update failed and the database connection was closed. Check server logs before retrying.',
+            stage,
+            databaseCode: code,
+          });
+        }
         if (error instanceof HttpException) throw error;
-        throw new InternalServerErrorException('Unable to save stats. The update was rolled back.');
+        const message =
+          stage === 'connect'
+            ? 'Unable to connect to the database. No data was changed.'
+            : 'Unable to save stats. The update was rolled back.';
+        throw new InternalServerErrorException({ message, stage, databaseCode: code });
       } finally {
-        await runner.release();
+        try {
+          await runner.release();
+        } catch (releaseError) {
+          this.logger.error({
+            event: 'stats_sync_cleanup_failed',
+            stage: 'release',
+            databaseCode: databaseErrorCode(releaseError),
+          });
+          if (connection) {
+            try {
+              await connection.end();
+            } catch {
+              this.logger.error({ event: 'stats_sync_cleanup_failed', stage: 'disconnect' });
+            }
+          }
+        }
       }
     } finally {
       this.syncing = false;

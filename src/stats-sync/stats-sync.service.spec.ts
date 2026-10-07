@@ -5,6 +5,7 @@ import { Season } from '../seasons/entities/season.entity';
 import { TypeOrmService } from '../database/typeorm.service';
 import { parseStatsSource } from './stats-source';
 import { StatsSyncService } from './stats-sync.service';
+import { Logger } from '@nestjs/common';
 
 const sourceNode = {
   date: '07-10',
@@ -33,9 +34,11 @@ describe('Stats sync import', () => {
   let database: any;
   let rows: Map<any, any[]>;
   let fetchMock: jest.SpyInstance;
+  let logMock: jest.SpyInstance;
   const previousSource = process.env.API_MVSR_APP;
 
   beforeEach(() => {
+    logMock = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
     process.env.API_MVSR_APP = 'https://example.test/private-source';
     rows = new Map<any, any[]>([
       [Match, []],
@@ -84,6 +87,7 @@ describe('Stats sync import', () => {
 
   afterEach(() => {
     fetchMock.mockRestore();
+    logMock.mockRestore();
     if (previousSource === undefined) delete process.env.API_MVSR_APP;
     else process.env.API_MVSR_APP = previousSource;
   });
@@ -150,6 +154,76 @@ describe('Stats sync import', () => {
     expect(runner.rollbackTransaction).toHaveBeenCalledTimes(1);
     expect(runner.commitTransaction).not.toHaveBeenCalled();
     expect(runner.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a safe database code and stage without exposing SQL, values, or credentials', async () => {
+    const failure = Object.assign(new Error('secret connection and SQL values'), {
+      driverError: { code: '23505', detail: 'private row values' },
+      query: 'private SQL',
+      parameters: ['secret'],
+    });
+    runner.manager.save.mockRejectedValueOnce(failure);
+    let caught: any;
+    try {
+      await service.sync();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught.getResponse()).toMatchObject({ stage: 'save_teams', databaseCode: '23505' });
+    expect(logMock).toHaveBeenCalledWith({ event: 'stats_sync_failed', stage: 'save_teams', databaseCode: '23505' });
+    expect(JSON.stringify(caught.getResponse())).not.toContain('secret');
+    expect(JSON.stringify(logMock.mock.calls)).not.toContain('private');
+  });
+
+  it('reports a connection failure without claiming a rollback and permits a later retry', async () => {
+    runner.connect.mockRejectedValueOnce(Object.assign(new Error('private host'), { code: 'ECONNRESET' }));
+    await expect(service.sync()).rejects.toThrow('Unable to connect to the database. No data was changed.');
+    expect(runner.rollbackTransaction).not.toHaveBeenCalled();
+    expect(runner.release).toHaveBeenCalledTimes(1);
+    expect((await service.sync()).inserted).toBe(1);
+  });
+
+  it('discards the client if rollback fails and preserves the original failure diagnostics', async () => {
+    const connection = { end: jest.fn().mockResolvedValue(undefined) };
+    runner.connect.mockResolvedValue(connection);
+    runner.manager.save.mockRejectedValueOnce({ driverError: { code: '23505' } });
+    runner.rollbackTransaction.mockRejectedValueOnce({ code: 'ECONNRESET' });
+    let caught: any;
+    try {
+      await service.sync();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught.getStatus()).toBe(503);
+    expect(caught.getResponse()).toMatchObject({ stage: 'save_teams', databaseCode: '23505' });
+    expect(caught.message).not.toContain('was rolled back');
+    expect(connection.end).toHaveBeenCalledTimes(1);
+    expect(runner.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the client if release fails, without masking a committed update', async () => {
+    const connection = { end: jest.fn().mockResolvedValue(undefined) };
+    runner.connect.mockResolvedValue(connection);
+    runner.release.mockImplementationOnce(async () => {
+      runner.isReleased = true;
+      throw { code: 'ECONNRESET' };
+    });
+    expect((await service.sync()).inserted).toBe(1);
+    expect(connection.end).toHaveBeenCalledTimes(1);
+    expect(logMock).toHaveBeenCalledWith({
+      event: 'stats_sync_cleanup_failed',
+      stage: 'release',
+      databaseCode: 'ECONNRESET',
+    });
+  });
+
+  it('sets local server timeouts before querying and writing', async () => {
+    await service.sync();
+    expect(runner.query.mock.calls.slice(0, 3)).toEqual([
+      ["SET LOCAL statement_timeout = '15s'"],
+      ["SET LOCAL lock_timeout = '3s'"],
+      ["SET LOCAL idle_in_transaction_session_timeout = '20s'"],
+    ]);
   });
 
   it('rejects a database lock conflict without writing', async () => {

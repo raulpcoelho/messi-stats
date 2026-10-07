@@ -3,11 +3,12 @@ const { AppModule } = require('../dist/app.module');
 const { ValidationPipe } = require('@nestjs/common');
 const { DocumentBuilder, SwaggerModule } = require('@nestjs/swagger');
 
-let app;
+let appPromise;
 
-async function bootstrap() {
-  if (!app) {
-    app = await NestFactory.create(AppModule);
+async function initialize() {
+  let app;
+  try {
+    app = await NestFactory.create(AppModule, { abortOnError: false });
 
     app.useGlobalPipes(
       new ValidationPipe({
@@ -39,9 +40,21 @@ async function bootstrap() {
     });
 
     await app.init();
+    return app;
+  } catch (error) {
+    if (app) await app.close().catch(() => {});
+    throw error;
   }
+}
 
-  return app;
+function bootstrap() {
+  if (!appPromise) {
+    appPromise = initialize().catch(error => {
+      appPromise = undefined;
+      throw error;
+    });
+  }
+  return appPromise;
 }
 
 module.exports = async (req, res) => {

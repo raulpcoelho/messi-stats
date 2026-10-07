@@ -39,8 +39,9 @@ function parseInteger(value: unknown): number | null {
   return parsed;
 }
 
-function parseFlag(value: unknown): boolean {
-  if (isMissing(value) || value === '0' || value === 0 || value === false) return false;
+function parseFlag(value: unknown): boolean | null {
+  if (isMissing(value)) return null;
+  if (value === '0' || value === 0 || value === false) return false;
   if (value === '1' || value === 1 || value === true) return true;
   throw new Error('Invalid flag');
 }
