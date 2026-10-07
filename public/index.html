@@ -41,8 +41,19 @@
         <main class="main-content">
             <header>
                 <div class="header-content">
-                    <h1>Lionel Messi Stats</h1>
+                    <h1 id="stats-title" role="button" tabindex="0">Lionel Messi Stats</h1>
                     <p>Match records and career statistics</p>
+                </div>
+                <div id="stats-sync-controls" class="stats-sync-controls hidden" hidden>
+                    <button id="stats-sync-open" class="btn btn-secondary" type="button" aria-expanded="false" aria-controls="stats-sync-form">↻ Update stats</button>
+                    <form id="stats-sync-form" class="stats-sync-form hidden" hidden>
+                        <label for="stats-sync-key">Update key</label>
+                        <div class="stats-sync-fields">
+                            <input id="stats-sync-key" type="password" autocomplete="off" required placeholder="Enter your update key">
+                            <button id="stats-sync-submit" class="btn btn-secondary" type="submit">Update now</button>
+                        </div>
+                    </form>
+                    <p id="stats-sync-status" class="stats-sync-status" role="status" aria-live="polite"></p>
                 </div>
             </header>
 

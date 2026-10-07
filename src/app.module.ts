@@ -7,6 +7,7 @@ import { TeamsModule } from './teams/teams.module';
 import { TotalsModule } from './totals/totals.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
+import { StatsSyncModule } from './stats-sync/stats-sync.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { join } from 'path';
     CompetitionsModule,
     TeamsModule,
     TotalsModule,
+    StatsSyncModule,
     ServeStaticModule.forRoot({
       rootPath: join(__dirname, '..', 'public'),
     }),

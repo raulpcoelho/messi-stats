@@ -122,6 +122,16 @@ GET /totals?year=2022&competition=World%20Cup
 - Messi's stats on matches he didn't start: https://www.messistats.info/totals?started=false
 - Messi's stats from 2009 to 2019: https://www.messistats.info/totals/years?startYear=2009&endYear=2019
 
+## Updating stats from the page
+
+On the deployed API server, set `API_MVSR_APP` to the stats source URL used by the local import skill and `STATS_SYNC_TOKEN` to a strong, private update key. The existing `TYPEORM_*` settings must point to the remote database. Redeploy after configuring these environment variables; neither secret belongs in the public JavaScript or HTML.
+
+Click the **Lionel Messi Stats** page title four times, with less than two seconds between clicks. The hidden **Update stats** button appears for the current page session, including on mobile. Click it, enter your update key, and choose **Update now**. The page shows the number of new, corrected, and unchanged matches and refreshes the displayed stats.
+
+The authenticated `POST /admin/stats/sync` endpoint fetches and validates the source on the server, creates missing teams/seasons/competitions, and inserts new matches or corrects existing stats using the match date as the identity, consistent with the local importer. A transaction rolls back the whole import if a write fails. A PostgreSQL transaction lock prevents concurrent imports across server instances. Empty or ambiguous source responses, malformed records, and duplicate match dates are rejected. Existing matches absent from the source are retained. This flow does not require data migrations or `add-matches.json`.
+
+Without `STATS_SYNC_TOKEN`, the endpoint is disabled. The key is sent only in the request's Authorization header and is not saved in browser storage. The source request has a 20-second timeout; the hosting provider's function timeout must also accommodate the database import.
+
 ## License
 
 This project is licensed under the Apache 2.0 License - see the [LICENSE](./LICENSE) file for details.

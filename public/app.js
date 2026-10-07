@@ -20,7 +20,103 @@ document.addEventListener('DOMContentLoaded', () => {
   setupInfiniteScroll();
   setupScrollProgress();
   setupBackToTop();
+  setupStatsSync();
 });
+
+function setupStatsSync() {
+  const title = document.getElementById('stats-title');
+  const controls = document.getElementById('stats-sync-controls');
+  const openButton = document.getElementById('stats-sync-open');
+  const form = document.getElementById('stats-sync-form');
+  const keyInput = document.getElementById('stats-sync-key');
+  const submitButton = document.getElementById('stats-sync-submit');
+  const status = document.getElementById('stats-sync-status');
+  let clicks = 0;
+  let lastClick = 0;
+  let syncing = false;
+
+  function reveal() {
+    const now = Date.now();
+    clicks = now - lastClick > 2000 ? 1 : clicks + 1;
+    lastClick = now;
+    if (clicks === 4) {
+      controls.hidden = false;
+      controls.classList.remove('hidden');
+      openButton.focus();
+    }
+  }
+
+  title.addEventListener('click', reveal);
+  title.addEventListener('keydown', event => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      reveal();
+    }
+  });
+  openButton.addEventListener('click', () => {
+    form.hidden = false;
+    form.classList.remove('hidden');
+    openButton.setAttribute('aria-expanded', 'true');
+    keyInput.focus();
+  });
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (syncing) return;
+    const key = keyInput.value.trim();
+    if (!key) {
+      keyInput.focus();
+      return;
+    }
+    syncing = true;
+    submitButton.disabled = true;
+    openButton.disabled = true;
+    keyInput.disabled = true;
+    keyInput.value = '';
+    status.dataset.state = 'loading';
+    status.textContent = 'Fetching and updating stats…';
+    form.setAttribute('aria-busy', 'true');
+
+    try {
+      const response = await fetch('/admin/stats/sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}` },
+        cache: 'no-store',
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Unable to update stats. Please try again.');
+
+      status.dataset.state = 'success';
+      status.textContent = `Stats updated: ${result.inserted} new, ${result.updated} corrected, ${result.unchanged} unchanged.`;
+      form.hidden = true;
+      form.classList.add('hidden');
+      openButton.setAttribute('aria-expanded', 'false');
+      await refreshStatsAfterSync();
+    } catch (error) {
+      status.dataset.state = 'error';
+      status.textContent =
+        error.message === 'Failed to fetch' ? 'Connection lost. Check the stats before trying again.' : error.message;
+    } finally {
+      syncing = false;
+      submitButton.disabled = false;
+      openButton.disabled = false;
+      keyInput.disabled = false;
+      form.setAttribute('aria-busy', 'false');
+    }
+  });
+}
+
+async function refreshStatsAfterSync() {
+  await fetchAllMatches();
+  ['teams', 'competitions', 'opponents'].forEach(view => window.resetView(view));
+  // Invalidate a match-history request that started before the update completed.
+  matchesRequestVersion++;
+  isLoading = false;
+  currentPage = 1;
+  hasMore = true;
+  document.getElementById('matches-grid').innerHTML = '';
+  await fetchMatches(currentYearFilter);
+}
 
 // Scroll Progress Bar
 function setupScrollProgress() {
@@ -80,7 +176,8 @@ function animateCounter(element, target, duration = 1500) {
 
 async function fetchAllMatches() {
   try {
-    const response = await fetch(`${API_URL}?limit=10000`);
+    const response = await fetch(`${API_URL}?limit=10000`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Unable to load stats');
     allMatches = await response.json();
     populateLists();
     renderStats(allMatches);
@@ -223,6 +320,8 @@ window.resetView = function (viewId) {
   statsContainer.innerHTML = '';
 };
 
+let matchesRequestVersion = 0;
+
 async function fetchMatches(year = '') {
   if (isLoading) return;
 
@@ -236,6 +335,7 @@ async function fetchMatches(year = '') {
   if (!hasMore) return;
 
   isLoading = true;
+  const requestVersion = ++matchesRequestVersion;
   const grid = document.getElementById('matches-grid');
 
   if (currentPage === 1 && !grid.children.length) {
@@ -244,8 +344,10 @@ async function fetchMatches(year = '') {
 
   try {
     const url = `${API_URL}?page=${currentPage}&limit=20${year ? `&year=${year}` : ''}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error('Unable to load matches');
     const matches = await response.json();
+    if (requestVersion !== matchesRequestVersion) return;
 
     if (currentPage === 1) {
       grid.innerHTML = '';
@@ -263,12 +365,13 @@ async function fetchMatches(year = '') {
       currentPage++;
     }
   } catch (error) {
+    if (requestVersion !== matchesRequestVersion) return;
     console.error('Error fetching matches:', error);
     if (currentPage === 1) {
       grid.innerHTML = '<p class="error">Failed to load matches. Please try again later.</p>';
     }
   } finally {
-    isLoading = false;
+    if (requestVersion === matchesRequestVersion) isLoading = false;
   }
 }
 
