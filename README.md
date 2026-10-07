@@ -132,6 +132,10 @@ The authenticated `POST /admin/stats/sync` endpoint fetches and validates the so
 
 Without `STATS_SYNC_TOKEN`, the endpoint is disabled. The key is sent only in the request's Authorization header and is not saved in browser storage. The source request has a 20-second timeout; the hosting provider's function timeout must also accommodate the database import.
 
+The API shares one database pool per server instance, with three connections by default (`TYPEORM_POOL_SIZE`) and a 10-second connection acquisition timeout. The import sets transaction-local query, lock, and idle transaction timeouts, and discards the connection if rollback fails. Serverless requests share an initialization promise; a failed initialization is closed and retried on the next request.
+
+If an import fails, its authenticated response and server logs include `stage` and `databaseCode`, without SQL, row values, credentials, or the source URL. For example, `23505` indicates a unique-key conflict and `42501` indicates missing database permissions. Use these diagnostics to investigate the cause before retrying. Unknown boolean stats remain `null` instead of being rewritten as `false`.
+
 ## License
 
 This project is licensed under the Apache 2.0 License - see the [LICENSE](./LICENSE) file for details.

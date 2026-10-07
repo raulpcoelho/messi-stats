@@ -50,6 +50,12 @@ describe('Stats source validation', () => {
     expect(match.goals).toBe(0);
   });
 
+  it('preserves unknown boolean stats instead of changing them to false', () => {
+    const [match] = parseStatsSource(sourcePayload([{ ...sourceNode, motm: null, started: '-' }]));
+    expect(match.motm).toBeNull();
+    expect(match.started).toBeNull();
+  });
+
   it.each([
     {},
     { edges: [] },
