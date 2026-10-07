@@ -59,7 +59,12 @@ describe('Stats sync import', () => {
       rollbackTransaction: jest.fn(async () => {
         runner.isTransactionActive = false;
       }),
-      query: jest.fn().mockResolvedValue([{ locked: true }]),
+      query: jest.fn(async (sql: string, params: string[]) => {
+        if (sql.includes('pg_get_serial_sequence')) return [{ sequence: `${params[0].replace(/"/g, '')}_id_seq` }];
+        if (sql.includes('nextval')) return [{ next_id: '1' }];
+        if (sql.includes('FROM pg_sequences')) return [{ max_id: '0', last_value: '1' }];
+        return [{ locked: true }];
+      }),
       manager: {
         find: jest.fn(async entity => [...rows.get(entity)]),
         create: jest.fn((entity, values) => Object.assign(new entity(), values)),
@@ -77,7 +82,16 @@ describe('Stats sync import', () => {
         }),
       },
     };
-    database = { createQueryRunner: jest.fn(() => runner) };
+    const tableNames = new Map<any, string>([
+      [Match, 'matches'],
+      [Team, 'teams'],
+      [Season, 'seasons'],
+      [Competition, 'competitions'],
+    ]);
+    database = {
+      createQueryRunner: jest.fn(() => runner),
+      getMetadata: jest.fn(entity => ({ tableName: tableNames.get(entity) })),
+    };
     service = new StatsSyncService(database as TypeOrmService);
     fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
@@ -224,6 +238,87 @@ describe('Stats sync import', () => {
       ["SET LOCAL lock_timeout = '3s'"],
       ["SET LOCAL idle_in_transaction_session_timeout = '20s'"],
     ]);
+  });
+
+  it('aligns stale ID sequences before inserting matches and related records', async () => {
+    const originalQuery = runner.query.getMockImplementation();
+    runner.query.mockImplementation((sql, params) =>
+      sql.includes('FROM pg_sequences') ? [{ max_id: '100', last_value: '1' }] : originalQuery(sql, params),
+    );
+    await service.sync();
+    expect(runner.query.mock.calls.filter(([sql]) => sql.includes('setval'))).toEqual([
+      ['SELECT setval($1::regclass, $2::bigint, true)', ['teams_id_seq', '100']],
+      ['SELECT setval($1::regclass, $2::bigint, true)', ['seasons_id_seq', '100']],
+      ['SELECT setval($1::regclass, $2::bigint, true)', ['competitions_id_seq', '100']],
+      ['SELECT setval($1::regclass, $2::bigint, true)', ['matches_id_seq', '100']],
+    ]);
+  });
+
+  it('preserves sequence reservations higher than the largest existing ID during repair', async () => {
+    const originalQuery = runner.query.getMockImplementation();
+    runner.query.mockImplementation((sql, params) =>
+      sql.includes('FROM pg_sequences') ? [{ max_id: '100', last_value: '300' }] : originalQuery(sql, params),
+    );
+    await service.sync();
+    expect(runner.query.mock.calls.filter(([sql]) => sql.includes('setval')).map(([, params]) => params[1])).toEqual([
+      '300',
+      '300',
+      '300',
+      '300',
+    ]);
+  });
+
+  it('does not reset a healthy sequence or inspect sequences when no rows are inserted', async () => {
+    const originalQuery = runner.query.getMockImplementation();
+    runner.query.mockImplementation((sql, params) => {
+      if (sql.includes('nextval')) return [{ next_id: '301' }];
+      if (sql.includes('FROM pg_sequences')) return [{ max_id: '100', last_value: '301' }];
+      return originalQuery(sql, params);
+    });
+    await service.sync();
+    expect(runner.query.mock.calls.some(([sql]) => sql.includes('setval'))).toBe(false);
+    runner.query.mockClear();
+    await service.sync();
+    expect(runner.query.mock.calls.some(([sql]) => sql.includes('nextval'))).toBe(false);
+  });
+
+  it('reports a remaining unique constraint conflict without ignoring it or retrying writes', async () => {
+    runner.manager.save.mockRejectedValueOnce({ driverError: { code: '23505', constraint: 'matches_date_unique' } });
+    let caught: any;
+    try {
+      await service.sync();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught.getResponse()).toMatchObject({ databaseCode: '23505', databaseConstraint: 'matches_date_unique' });
+    expect(runner.manager.save).toHaveBeenCalledTimes(1);
+    expect(runner.rollbackTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('corrects a single one-day date shift in an otherwise matching snapshot, keeping its ID', async () => {
+    const otherNode = { ...sourceNode, date: '01-10', opponent: 'Other opponent' };
+    fetchMock.mockResolvedValue({ ok: true, json: async () => sourcePayload([sourceNode, otherNode]) } as Response);
+    await service.sync();
+    const previousId = rows.get(Match)[0].id;
+    rows.get(Match)[0].matchDate = '2026-10-06';
+    runner.query.mockClear();
+    expect(await service.sync()).toEqual({ fetched: 2, inserted: 0, updated: 1, unchanged: 1 });
+    expect(rows.get(Match)).toHaveLength(2);
+    expect(rows.get(Match)[0]).toMatchObject({ id: previousId, matchDate: '2026-10-07' });
+    expect(runner.query.mock.calls.some(([sql]) => sql.includes('nextval'))).toBe(false);
+  });
+
+  it.each(['partial', 'different'])('retains unmatched games when the source is %s', async mode => {
+    const otherNode = { ...sourceNode, date: '01-10', opponent: 'Other opponent' };
+    fetchMock.mockResolvedValue({ ok: true, json: async () => sourcePayload([sourceNode, otherNode]) } as Response);
+    await service.sync();
+    rows.get(Match)[0].matchDate = '2026-10-06';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => sourcePayload(mode === 'partial' ? [sourceNode] : [{ ...sourceNode, goals: '2' }, otherNode]),
+    } as Response);
+    expect((await service.sync()).inserted).toBe(1);
+    expect(rows.get(Match).map(m => m.matchDate)).toContain('2026-10-06');
   });
 
   it('rejects a database lock conflict without writing', async () => {
