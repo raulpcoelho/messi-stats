@@ -81,9 +81,31 @@ export class StatsSyncService {
         const sourceDates = new Set(matches.map(match => dateKey(match.matchDate)));
         const removedDates = existing.filter(match => !sourceDates.has(dateKey(match.matchDate)));
         const addedDates = matches.filter(match => !byDate.has(dateKey(match.matchDate)));
-        // Recognize one isolated date shift in an otherwise complete snapshot.
-        const shiftedMatch =
-          existing.length > 1 && removedDates.length === 1 && addedDates.length === 1 ? removedDates[0] : undefined;
+        const dateCorrections = new Map<string, Match>();
+        // A complete snapshot can correct dates and add new games in the same request.
+        if (existing.length > 1 && matches.length >= existing.length && removedDates.length > 0) {
+          const candidates = addedDates.map(dto => ({
+            dto,
+            previous: removedDates.filter(
+              previous =>
+                Math.abs(new Date(dateKey(previous.matchDate)).getTime() - dto.matchDate.getTime()) <= 2 * 86400000 &&
+                Object.entries(dto).every(([key, value]) => {
+                  if (key === 'matchDate') return true;
+                  if (['team', 'opponent', 'season', 'competition'].includes(key)) return previous[key]?.name === value;
+                  return previous[key] === value;
+                }),
+            ),
+          }));
+          // Require a unique match in both directions and account for every missing date.
+          const unique = candidates.filter(
+            candidate =>
+              candidate.previous.length === 1 &&
+              candidates.filter(other => other.previous.includes(candidate.previous[0])).length === 1,
+          );
+          if (unique.length === removedDates.length) {
+            unique.forEach(({ dto, previous }) => dateCorrections.set(dateKey(dto.matchDate), previous[0]));
+          }
+        }
 
         stage = 'save_teams';
         const teams = await this.ensureNames(
@@ -107,18 +129,7 @@ export class StatsSyncService {
         const changes: Match[] = [];
 
         for (const dto of matches) {
-          let previous = byDate.get(dateKey(dto.matchDate));
-          if (
-            !previous &&
-            shiftedMatch &&
-            Math.abs(new Date(dateKey(shiftedMatch.matchDate)).getTime() - dto.matchDate.getTime()) === 86400000 &&
-            Object.entries(dto).every(([key, value]) => {
-              if (key === 'matchDate') return true;
-              if (['team', 'opponent', 'season', 'competition'].includes(key)) return shiftedMatch[key]?.name === value;
-              return shiftedMatch[key] === value;
-            })
-          )
-            previous = shiftedMatch;
+          const previous = byDate.get(dateKey(dto.matchDate)) ?? dateCorrections.get(dateKey(dto.matchDate));
           const values = {
             ...dto,
             // Persist a calendar date: TypeORM formats Date objects in the host timezone.

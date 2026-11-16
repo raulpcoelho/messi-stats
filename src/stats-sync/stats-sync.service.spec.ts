@@ -318,6 +318,63 @@ describe('Stats sync import', () => {
     expect(runner.query.mock.calls.some(([sql]) => sql.includes('nextval'))).toBe(false);
   });
 
+  it('corrects the two-day Bayern date error while inserting a genuinely new game, then remains idempotent', async () => {
+    const bayern = {
+      ...sourceNode,
+      date: '14-08',
+      year: '2020',
+      season: '2019-2020',
+      competition: 'Champions League',
+      team: 'Barcelona',
+      opponent: 'Bayern Munich',
+      homeAway: 'N',
+      scoreTeam: '2',
+      scoreOpponent: '8',
+      assists: '0',
+      successfulDribbles: '3',
+    };
+    fetchMock.mockResolvedValue({ ok: true, json: async () => sourcePayload([bayern, sourceNode]) } as Response);
+    await service.sync();
+    const previousId = rows.get(Match)[0].id;
+    rows.get(Match)[0].matchDate = '2020-08-16';
+    const newGame = { ...sourceNode, date: '07-11', opponent: 'Charlotte FC' };
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => sourcePayload([bayern, sourceNode, newGame]),
+    } as Response);
+
+    expect(await service.sync()).toEqual({ fetched: 3, inserted: 1, updated: 1, unchanged: 1 });
+    expect(rows.get(Match)).toHaveLength(3);
+    expect(rows.get(Match)[0]).toMatchObject({ id: previousId, matchDate: '2020-08-14' });
+    expect(rows.get(Match).map(m => m.matchDate)).not.toContain('2020-08-16');
+    expect(await service.sync()).toEqual({ fetched: 3, inserted: 0, updated: 0, unchanged: 3 });
+  });
+
+  it.each([
+    { oldDates: ['05-10', '09-10'], newDates: ['07-10'] },
+    { oldDates: ['07-10'], newDates: ['05-10', '09-10'] },
+    { oldDates: ['04-10'], newDates: ['07-10'] },
+  ])('retains unmatched games for ambiguous or distant date corrections: %j', async ({ oldDates, newDates }) => {
+    const anchor = { ...sourceNode, date: '01-09', opponent: 'Other opponent' };
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => sourcePayload([anchor, ...oldDates.map(date => ({ ...sourceNode, date }))]),
+    } as Response);
+    await service.sync();
+    const newGame = { ...sourceNode, date: '07-11', opponent: 'Charlotte FC' };
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => sourcePayload([anchor, ...newDates.map(date => ({ ...sourceNode, date })), newGame]),
+    } as Response);
+    expect(await service.sync()).toEqual({
+      fetched: newDates.length + 2,
+      inserted: newDates.length + 1,
+      updated: 0,
+      unchanged: 1,
+    });
+    expect(rows.get(Match)).toHaveLength(oldDates.length + newDates.length + 2);
+  });
+
   it.each(['partial', 'different'])('retains unmatched games when the source is %s', async mode => {
     const otherNode = { ...sourceNode, date: '01-10', opponent: 'Other opponent' };
     fetchMock.mockResolvedValue({ ok: true, json: async () => sourcePayload([sourceNode, otherNode]) } as Response);
