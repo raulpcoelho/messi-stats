@@ -117,6 +117,16 @@ describe('Stats sync import', () => {
     expect(runner.commitTransaction).toHaveBeenCalledTimes(2);
   });
 
+  it('imports the current page-data source format', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { pageContext: { matches: [sourceNode] } } }),
+    } as Response);
+    expect(await service.sync()).toEqual({ fetched: 1, inserted: 1, updated: 0, unchanged: 0 });
+    expect(rows.get(Match)[0]).toMatchObject({ goals: 0, teamScore: 2, matchDate: '2026-10-07' });
+    expect(runner.commitTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('corrects existing stats by date, preserving the row id and unrelated matches', async () => {
     await service.sync();
     rows.get(Match)[0].matchDate = '2026-10-07'; // Postgres date columns return strings.

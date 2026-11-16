@@ -130,6 +130,8 @@ Click the **Lionel Messi Stats** page title four times, with less than two secon
 
 The authenticated `POST /admin/stats/sync` endpoint fetches and validates the source on the server, creates missing teams/seasons/competitions, and inserts new matches or corrects existing stats using the match date as the identity, consistent with the local importer. A transaction rolls back the whole import if a write fails. A PostgreSQL transaction lock prevents concurrent imports across server instances. Empty or ambiguous source responses, malformed records, and duplicate match dates are rejected. Existing matches absent from the source are retained. This flow does not require data migrations or `add-matches.json`.
 
+The source can return match objects in `result.pageContext.matches` (the current page-data format) or a single legacy `edges` array containing `{ node }` records. Both formats use the same field validation; responses containing both are rejected as ambiguous.
+
 Without `STATS_SYNC_TOKEN`, the endpoint is disabled. The key is sent only in the request's Authorization header and is not saved in browser storage. The source request has a 20-second timeout; the hosting provider's function timeout must also accommodate the database import.
 
 The API shares one database pool per server instance, with three connections by default (`TYPEORM_POOL_SIZE`) and a 10-second connection acquisition timeout. The import sets transaction-local query, lock, and idle transaction timeouts, and discards the connection if rollback fails. Serverless requests share an initialization promise; a failed initialization is closed and retried on the next request.

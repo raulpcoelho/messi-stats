@@ -50,6 +50,32 @@ describe('Stats source validation', () => {
     expect(match.goals).toBe(0);
   });
 
+  it('maps the current page-data matches format using the same validation as legacy edges', () => {
+    const payload = { result: { pageContext: { matches: [sourceNode] } } };
+    const before = JSON.stringify(payload);
+    expect(parseStatsSource(payload)).toEqual(parseStatsSource(sourcePayload()));
+    expect(JSON.stringify(payload)).toBe(before);
+  });
+
+  it.each([null, {}, [], [null], [{ node: sourceNode }], [{ ...sourceNode, goals: 'bad' }], [sourceNode, sourceNode]])(
+    'rejects invalid current-format matches without bypassing validation',
+    matches => {
+      expect(() => parseStatsSource({ result: { pageContext: { matches } } })).toThrow();
+    },
+  );
+
+  it('rejects ambiguous responses containing both supported formats', () => {
+    const payload = {
+      ...sourcePayload(),
+      result: { ...sourcePayload().result, pageContext: { matches: [sourceNode] } },
+    };
+    expect(() => parseStatsSource(payload)).toThrow();
+  });
+
+  it('does not accept an arbitrary matches array outside the known page-data path', () => {
+    expect(() => parseStatsSource({ matches: [sourceNode] })).toThrow();
+  });
+
   it('preserves unknown boolean stats instead of changing them to false', () => {
     const [match] = parseStatsSource(sourcePayload([{ ...sourceNode, motm: null, started: '-' }]));
     expect(match.motm).toBeNull();
