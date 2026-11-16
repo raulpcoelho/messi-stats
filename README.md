@@ -140,7 +140,9 @@ If an import fails, its authenticated response and server logs include `stage` a
 
 Before inserting matches or related records, the import aligns the owned ID sequence if it would generate an ID already present in the table. This handles data previously imported by migrations with explicit IDs. The repair holds a table lock that allows ordinary reads, never lowers the sequence below its reserved values, and requires sequence UPDATE permission only when repair is needed. It does not change existing row IDs. Checking sequences consumes an ID; PostgreSQL sequence advances also persist if the import rolls back, so gaps in IDs are normal. Other unique-key errors still roll back and now include a sanitized `databaseConstraint` name in the diagnostic.
 
-When a complete snapshot differs by exactly one removed date and one added date, and the corresponding match differs by one day with all other stats identical, the import corrects its date while preserving its ID. Partial snapshots and ambiguous or different match records retain the existing insertion behavior.
+When a snapshot contains at least as many matches as the database and every removed date has a unique replacement within two days with all other stats identical, the import corrects those dates while preserving their IDs. New games can be inserted in the same request. Matching must be unique in both directions. Partial snapshots and ambiguous or different match records retain the existing insertion behavior. Existing duplicate games with different dates are not automatically deleted.
+
+For the confirmed duplicate Barcelona–Bayern Munich game dated `2020-08-16` instead of `2020-08-14`, `scripts/repair-duplicate-bayern-match.sql` provides a manual repair. It only removes the `2020-08-16` row if exactly one matching record exists on each date and all other persisted fields match. Run the whole script in the intended database; it uses a transaction, takes the sync lock, and aborts if any check fails. The script reports the removed ID, preserved ID, and row counts. It is not run by migrations or stats synchronization.
 
 ## License
 
