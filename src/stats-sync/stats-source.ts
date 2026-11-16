@@ -46,7 +46,7 @@ function parseFlag(value: unknown): boolean | null {
   throw new Error('Invalid flag');
 }
 
-// Discover the single edges array without depending on the upstream envelope.
+// Accept the current page-data format and the legacy GraphQL edges envelope.
 export function parseStatsSource(payload: unknown): MatchDto[] {
   const candidates: unknown[] = [];
   function visit(value: unknown): void {
@@ -60,8 +60,13 @@ export function parseStatsSource(payload: unknown): MatchDto[] {
     }
   }
   visit(payload);
+  const pageContext = isObject(payload) && isObject(payload.result) && payload.result.pageContext;
+  if (isObject(pageContext) && 'matches' in pageContext) {
+    const matches = pageContext.matches;
+    candidates.push(Array.isArray(matches) ? matches.map(node => ({ node })) : matches);
+  }
   if (candidates.length !== 1 || !Array.isArray(candidates[0]) || candidates[0].length === 0) {
-    throw new Error('Expected a single nonempty edges array');
+    throw new Error('Expected a single nonempty match array');
   }
 
   const dates = new Set<string>();
